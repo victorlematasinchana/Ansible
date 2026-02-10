@@ -1,0 +1,56 @@
+########################################################################################################
+#     Upload GITAM barcode
+#  author: JA Vieitez (c) CGI Inc
+#  status: production
+# 
+#   Remove duplicate GITAM barcode files and create a new one
+#   
+#   The variable GITAM_barcode must be set in the inventory for each server
+########################################################################################################---
+- hosts: all,!no_flexera
+  become: true
+  gather_facts: no
+
+  handlers:
+    - name: Restart ndtask
+      service:
+        name: ndtask
+        state: restarted
+        enabled: true
+      ignore_errors: true
+
+  tasks:
+    - name: Get a list of the .gitam file names
+      shell:
+        cmd: ls /var/opt/*.gitam
+      register: gitam_names
+      ignore_errors: true
+
+    #- name: Print Output
+    #  debug: 
+    #    msg: "{{ gitam_names.stdout_lines }}"
+    #  when: gitam_names.stdout_lines | length != 1
+
+    - name: Remove redundant barcode files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ gitam_names.stdout_lines }}"
+      when: gitam_names.stdout_lines | length != 1
+      ignore_errors: true
+
+    - name: GITAM File exists
+      lineinfile:
+        path: /var/opt/{{ GITAM_barcode }}.gitam
+        line: ITAM Barcode 
+        create: true
+        mode: '0644'
+      notify: Restart ndtask
+
+    - name: Fix the GITAM entry in config.ini
+      lineinfile:
+        path: /var/opt/managesoft/etc/config.ini
+        regexp: '^IncludeExtension'
+        line: IncludeExtension=sys;sys2;swtag;cmptag;lax;swidtag;sig;GITAM;gitam
+        create: true
+      notify: Restart ndtask
