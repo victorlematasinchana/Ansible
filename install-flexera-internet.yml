@@ -1,123 +1,173 @@
-########################################################################################################
-#     Install Flexera Internet
-#  author: JA Vieitez (c) CGI Inc
-#  status: production
-#
-#  Installs the latest package and applies all the post installation tasks   
-########################################################################################################
----
+# Playbook que se ejecuta contra el grupo de hosts "flexera_internet"
 - hosts: flexera_internet
+
+  # Eleva privilegios (sudo/root) para poder escribir en /var, instalar paquetes, etc.
   become: true
 
   vars:
-    myRemoteServers: 
+    # URL base del repositorio en Google Cloud Storage (GCS)
+    flexera_repo_url: "https://storage.googleapis.com/recursos-ansible/Flexera-recursos"
+
+    # Nombre base del paquete DEB (sin .deb). Se usa para construir la URL y el path local.
+    version_flexera_deb: "managesoft_23.0.1_amd64"
+
+    # Nombre base del paquete RPM (sin .rpm). OJO: variable tiene typo "felxera".
+    version_felxera_rpm: "managesoft-21.3.0-1.x86_64"
+
+    # Lista de servidores remotos (beacon / endpoint) a los que se comprobará conectividad
+    myRemoteServers:
       - name: istdbeacon.fnms.gitam.ent.cgi.com
         ip: 128.129.48.35
-        ports: [886]
+        ports: [886]   # Puertos que se comprobarán con wait_for
+
+    # Carpeta/versión dentro del repositorio para ficheros auxiliares (response/config/key)
     current_flexera_version: "internet_install"
+
   handlers:
+    # Handler: solo se ejecuta si alguna tarea lo notifica (notify).
+    # Aplica configuración post-instalación usando tempconfig.ini
     - name: Post-install command
       shell: /opt/managesoft/bin/mgsconfig -i /var/tmp/tempconfig.ini
 
   tasks:
-    - name: Upload GITAM barcode 
-      copy:
-        src: "{{ cgi_filerepo_local }}/gitam_barcodes/{{ GITAM_barcode }}.gitam"
-        dest: /var/opt/
+    # Crea /var/opt si no existe (donde se guardará el .gitam)
+    - name: Ensure /var/opt exists
+      file:
+        path: /var/opt
+        state: directory
+        mode: "0755"
 
-    - name: Upload mgsft_rollout_response
-      copy:
-        src: "{{ cgi_filerepo_local }}/flexera/linux/{{ current_flexera_version }}/{{ item }}"
-        dest: "/var/tmp/"
-      with_list:
+    # Descarga el barcode GITAM desde el repositorio GCS.
+    # Requiere que la variable GITAM_barcode esté definida (si no, falla).
+    - name: Download GITAM barcode from GCS repo
+      get_url:
+        url: "{{ flexera_repo_url }}/flexera/{{ GITAM_barcode }}.gitam"
+        dest: "/var/opt/{{ GITAM_barcode }}.gitam"
+        mode: "0644"
+
+    # Descarga dos ficheros a /var/tmp: mgsft_rollout_response y tempconfig.ini
+    # Loop recorre cada item de la lista
+    - name: Download mgsft_rollout_response and tempconfig.ini from GCS repo
+      get_url:
+        url: "{{ flexera_repo_url }}/flexera/linux/{{ current_flexera_version }}/{{ item }}"
+        dest: "/var/tmp/{{ item }}"
+        mode: "0644"
+      loop:
         - mgsft_rollout_response
         - tempconfig.ini
 
-    - name: RPM GPG key
+    # Descarga la clave GPG para paquetes RPM.
+    # Solo aplica para sistemas RedHat-based (yum/dnf) y versión mayor > 6 (RHEL/CentOS 7+)
+    - name: Download RPM GPG key from GCS repo
+      get_url:
+        url: "{{ flexera_repo_url }}/flexera/linux/{{ current_flexera_version }}/RPM-GPG-KEY-FlexeraSoftwareLLC"
+        dest: "/var/tmp/RPM-GPG-KEY-FlexeraSoftwareLLC"
+        mode: "0644"
+      when: (ansible_pkg_mgr == "yum" or ansible_pkg_mgr == "dnf") and (ansible_distribution_major_version | int > 6)
+
+    # Importa la clave GPG descargada en el sistema para validar RPMs (si se usara validación)
+    - name: Import RPM GPG key
       rpm_key:
         state: present
-        key: "{{ cgi_filerepo }}/flexera/linux/{{ current_flexera_version }}/RPM-GPG-KEY-FlexeraSoftwareLLC"
-    # Only apply if Redhat > 7, to prevent RHEL yum bug 
-      when: (ansible_pkg_mgr == "yum" or ansible_pkg_mgr == "dnf")  and (ansible_distribution_major_version |int > 6)
+        key: /var/tmp/RPM-GPG-KEY-FlexeraSoftwareLLC
+      when: (ansible_pkg_mgr == "yum" or ansible_pkg_mgr == "dnf") and (ansible_distribution_major_version | int > 6)
 
-    - name: Managesoft/Flexera latest version (RPM)
+    # Instala el paquete RPM desde una URL.
+    # OJO: aquí tu URL NO incluye current_flexera_version (internet_install),
+    # depende de cómo esté organizado el bucket.
+    # disable_gpg_check=true instala aunque no esté firmado.
+    # notify ejecuta el handler post-instalación si hubo cambios.
+    - name: Managesoft/Flexera latest version (RPM) - install from URL
       dnf:
-        name: "{{ cgi_filerepo }}/flexera/linux/{{ current_flexera_version }}/managesoft-latest.rpm" 
+        name: "{{ flexera_repo_url }}/flexera/linux/{{ version_felxera_rpm }}.rpm"
         state: present
-        cacheonly: true
-        # Last version didn't come with GPG signature
         disable_gpg_check: true
-    # Only apply if Redhat > 7, to prevent RHEL yum bug 
-      when: (ansible_pkg_mgr == "yum" or ansible_pkg_mgr == "dnf")  and (ansible_distribution_major_version |int > 6)
+      when: (ansible_pkg_mgr == "yum" or ansible_pkg_mgr == "dnf") and (ansible_distribution_major_version | int > 6)
       notify: Post-install command
 
-    - name: Managesoft/Flexera latest version (DEB)
-      apt:
-        deb: "{{ cgi_filerepo }}/flexera/linux/{{ current_flexera_version }}/managesoft-latest.deb" 
-        state: present
-        update_cache: false
+    # Bloque para sistemas basados en Debian/Ubuntu:
+    # 1) Descarga el .deb a /var/tmp
+    # 2) Instala el .deb con apt
+    # ignore_errors: si falla la instalación, no rompe el playbook (continúa).
+    # notify: lanza postinstalación si apt instaló/cambió algo.
+    - name: Managesoft/Flexera latest version (DEB) - download then install
+      block:
+        - name: Download DEB from GCS repo
+          get_url:
+            url: "{{ flexera_repo_url }}/flexera/linux/{{ version_flexera_deb }}.deb"
+            dest: "/var/tmp/{{ version_flexera_deb }}.deb"
+            mode: "0644"
+
+        - name: Install DEB
+          apt:
+            deb: "/var/tmp/{{ version_flexera_deb }}.deb"
+            state: present
+            update_cache: false
       when: ansible_pkg_mgr == "apt"
       notify: Post-install command
       ignore_errors: true
 
+    # Asegura que el servicio ndtask esté arrancado y habilitado al arranque
     - name: ndtask - Service Enabled and Running
       service:
         name: ndtask
         state: started
         enabled: true
 
+    # Crea directorios necesarios para Flexera/Managesoft si no existen
     - name: folders exist
       file:
         path: "{{ item }}"
         state: directory
-      with_list: 
+        mode: "0755"
+      loop:
         - /opt/managesoft
         - /var/opt/managesoft/uploads/UsageData
 
+    # Asegura específicamente que exista /var/opt/managesoft
+    # (es redundante si ya existe por el paso anterior, pero no hace daño)
     - name: /var/opt/managesoft folder exists
       file:
         path: /var/opt/managesoft
         state: directory
+        mode: "0755"
 
+    # Busca ficheros *.gitam en /var/opt. OJO: no falla si no encuentra ninguno.
     - name: at least one GITAM file exists on /var/opt
       find:
         paths: /var/opt/
         patterns: "*.gitam"
 
-############################################################
-#   DNS resolved, no need for this step
-############################################################
-#    - name: Entries in /etc/hosts
-#      lineinfile:
-#        path: /etc/hosts
-#        search_string: "{{ item.name }}"
-#        line: "{{ item.ip }}      {{ item.name }}"
-#      loop: "{{ myRemoteServers|flatten(levels=1) }}"
-
+    # Verificación: comprueba que existe el bloque [ManageSoft\Tracker\CurrentVersion]
+    # en config.ini sin modificar el fichero (check_mode).
+    # Si la línea no existe, en check_mode Ansible diría que "changed", y aquí se fuerza a fallar.
     - name: CurrentVersion exists in config.ini
       lineinfile:
         path: /var/opt/managesoft/etc/config.ini
         line: "[ManageSoft\\Tracker\\CurrentVersion]"
-      #check_mode for avoiding to change the files
       check_mode: yes
       register: presence
       failed_when: presence.changed
 
+    # Ejecuta los handlers pendientes en este punto (no espera al final)
     - name: Flush handlers
       meta: flush_handlers
-      
+
+    # Asegura que la extensión GITAM esté registrada en config.ini (añade línea si falta)
     - name: GITAM extension registered in config.ini
       lineinfile:
         path: /var/opt/managesoft/etc/config.ini
         line: "IncludeExtension=sys;sys2;swtag;cmptag;lax;swidtag;sig;GITAM;gitam"
 
+    # Comprueba conectividad desde el host actual hacia cada servidor de myRemoteServers
+    # en cada puerto indicado (ej: 886). timeout 3s. ignore_errors para no romper si falla.
     - name: Access to remote server from the current host
       wait_for:
         host: "{{ item.0.name }}"
         port: "{{ item.1 }}"
-        state: started         # Port should be open
-        delay: 0               # No wait before first check (sec)
-        timeout: 3             # Stop checking after timeout (sec)
+        state: started
+        delay: 0
+        timeout: 3
       ignore_errors: yes
       with_subelements:
         - "{{ myRemoteServers }}"
