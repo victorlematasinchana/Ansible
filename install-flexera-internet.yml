@@ -1,0 +1,124 @@
+########################################################################################################
+#     Install Flexera Internet
+#  author: JA Vieitez (c) CGI Inc
+#  status: production
+#
+#  Installs the latest package and applies all the post installation tasks   
+########################################################################################################
+---
+- hosts: flexera_internet
+  become: true
+
+  vars:
+    myRemoteServers: 
+      - name: istdbeacon.fnms.gitam.ent.cgi.com
+        ip: 128.129.48.35
+        ports: [886]
+    current_flexera_version: "internet_install"
+  handlers:
+    - name: Post-install command
+      shell: /opt/managesoft/bin/mgsconfig -i /var/tmp/tempconfig.ini
+
+  tasks:
+    - name: Upload GITAM barcode 
+      copy:
+        src: "{{ cgi_filerepo_local }}/gitam_barcodes/{{ GITAM_barcode }}.gitam"
+        dest: /var/opt/
+
+    - name: Upload mgsft_rollout_response
+      copy:
+        src: "{{ cgi_filerepo_local }}/flexera/linux/{{ current_flexera_version }}/{{ item }}"
+        dest: "/var/tmp/"
+      with_list:
+        - mgsft_rollout_response
+        - tempconfig.ini
+
+    - name: RPM GPG key
+      rpm_key:
+        state: present
+        key: "{{ cgi_filerepo }}/flexera/linux/{{ current_flexera_version }}/RPM-GPG-KEY-FlexeraSoftwareLLC"
+    # Only apply if Redhat > 7, to prevent RHEL yum bug 
+      when: (ansible_pkg_mgr == "yum" or ansible_pkg_mgr == "dnf")  and (ansible_distribution_major_version |int > 6)
+
+    - name: Managesoft/Flexera latest version (RPM)
+      dnf:
+        name: "{{ cgi_filerepo }}/flexera/linux/{{ current_flexera_version }}/managesoft-latest.rpm" 
+        state: present
+        cacheonly: true
+        # Last version didn't come with GPG signature
+        disable_gpg_check: true
+    # Only apply if Redhat > 7, to prevent RHEL yum bug 
+      when: (ansible_pkg_mgr == "yum" or ansible_pkg_mgr == "dnf")  and (ansible_distribution_major_version |int > 6)
+      notify: Post-install command
+
+    - name: Managesoft/Flexera latest version (DEB)
+      apt:
+        deb: "{{ cgi_filerepo }}/flexera/linux/{{ current_flexera_version }}/managesoft-latest.deb" 
+        state: present
+        update_cache: false
+      when: ansible_pkg_mgr == "apt"
+      notify: Post-install command
+      ignore_errors: true
+
+    - name: ndtask - Service Enabled and Running
+      service:
+        name: ndtask
+        state: started
+        enabled: true
+
+    - name: folders exist
+      file:
+        path: "{{ item }}"
+        state: directory
+      with_list: 
+        - /opt/managesoft
+        - /var/opt/managesoft/uploads/UsageData
+
+    - name: /var/opt/managesoft folder exists
+      file:
+        path: /var/opt/managesoft
+        state: directory
+
+    - name: at least one GITAM file exists on /var/opt
+      find:
+        paths: /var/opt/
+        patterns: "*.gitam"
+
+############################################################
+#   DNS resolved, no need for this step
+############################################################
+#    - name: Entries in /etc/hosts
+#      lineinfile:
+#        path: /etc/hosts
+#        search_string: "{{ item.name }}"
+#        line: "{{ item.ip }}      {{ item.name }}"
+#      loop: "{{ myRemoteServers|flatten(levels=1) }}"
+
+    - name: CurrentVersion exists in config.ini
+      lineinfile:
+        path: /var/opt/managesoft/etc/config.ini
+        line: "[ManageSoft\\Tracker\\CurrentVersion]"
+      #check_mode for avoiding to change the files
+      check_mode: yes
+      register: presence
+      failed_when: presence.changed
+
+    - name: Flush handlers
+      meta: flush_handlers
+      
+    - name: GITAM extension registered in config.ini
+      lineinfile:
+        path: /var/opt/managesoft/etc/config.ini
+        line: "IncludeExtension=sys;sys2;swtag;cmptag;lax;swidtag;sig;GITAM;gitam"
+
+    - name: Access to remote server from the current host
+      wait_for:
+        host: "{{ item.0.name }}"
+        port: "{{ item.1 }}"
+        state: started         # Port should be open
+        delay: 0               # No wait before first check (sec)
+        timeout: 3             # Stop checking after timeout (sec)
+      ignore_errors: yes
+      with_subelements:
+        - "{{ myRemoteServers }}"
+        - ports
