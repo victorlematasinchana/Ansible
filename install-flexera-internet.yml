@@ -37,14 +37,6 @@
         state: directory
         mode: "0755"
 
-    # Descarga el barcode GITAM desde el repositorio GCS.
-    # Requiere que la variable GITAM_barcode esté definida (si no, falla).
-    - name: Download GITAM barcode from GCS repo
-      get_url:
-        url: "{{ flexera_repo_url }}/flexera/{{ GITAM_barcode }}.gitam"
-        dest: "/var/opt/{{ GITAM_barcode }}.gitam"
-        mode: "0644"
-
     # Descarga dos ficheros a /var/tmp: mgsft_rollout_response y tempconfig.ini
     # Loop recorre cada item de la lista
     - name: Download mgsft_rollout_response and tempconfig.ini from GCS repo
