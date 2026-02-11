@@ -1,5 +1,5 @@
 # Playbook que se ejecuta contra el grupo de hosts "flexera_internet"
-- hosts: flexera_internet
+- hosts: all
 
   # Eleva privilegios (sudo/root) para poder escribir en /var, instalar paquetes, etc.
   become: true
