@@ -41,7 +41,7 @@
 
     - name: GITAM File exists
       lineinfile:
-        path: /var/opt/{{ GITAM_barcode }}.gitam
+        path: "/var/opt/{{ GITAM_barcode }}.gitam"
         line: ITAM Barcode 
         create: true
         mode: '0644'
