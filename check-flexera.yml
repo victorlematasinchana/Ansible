@@ -1,0 +1,31 @@
+---
+###############################################################################################
+# Service up and running
+###############################################################################################
+- hosts: all,!no_flexera
+  become: true
+  gather_facts: false
+  vars:
+    myRemoteServers: 
+      - name: istdbeacon.fnms.gitam.ent.cgi.com
+        ip: 128.129.48.35
+        ports: [886]
+
+  tasks:
+    - name: ndtask - Service Enabled and Running
+      service:
+        name: ndtask
+        state: started
+        enabled: true
+
+    - name: Access to internet beacon server 
+      wait_for:
+        host: "{{ item.0.name }}"
+        port: "{{ item.1 }}"
+        state: started         # Port should be open
+        delay: 0               # No wait before first check (sec)
+        timeout: 3             # Stop checking after timeout (sec)
+      ignore_errors: yes
+      with_subelements:
+        - "{{ myRemoteServers }}"
+        - ports
